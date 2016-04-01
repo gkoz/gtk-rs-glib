@@ -2,8 +2,6 @@
 // See the COPYRIGHT file at the top-level directory of this distribution.
 // Licensed under the MIT license, see the LICENSE file or <http://opensource.org/licenses/MIT>
 
-use std::cell::RefCell;
-use std::mem::transmute;
 use std::process;
 use std::thread;
 use glib_ffi::{self, gboolean, gpointer};
@@ -45,21 +43,16 @@ impl Drop for CallbackGuard {
     }
 }
 
-unsafe extern "C" fn trampoline(func: gpointer) -> gboolean {
+unsafe extern "C" fn trampoline<F>(func: gpointer) -> gboolean
+where F: FnMut() -> Continue + Send + 'static {
     let _guard = CallbackGuard::new();
-    let func: &RefCell<Box<FnMut() -> Continue + 'static>> = transmute(func);
-    (&mut *func.borrow_mut())().to_glib()
+    let func = &mut *(func as *mut F);
+    func().to_glib()
 }
 
-unsafe extern "C" fn destroy_closure(ptr: gpointer) {
+unsafe extern "C" fn destroy<T>(ptr: gpointer) {
     let _guard = CallbackGuard::new();
-    Box::<RefCell<Box<FnMut() -> Continue + 'static>>>::from_raw(ptr as *mut _);
-}
-
-fn into_raw<F: FnMut() -> Continue + Send + 'static>(func: F) -> gpointer {
-    let func: Box<RefCell<Box<FnMut() -> Continue + Send + 'static>>> =
-        Box::new(RefCell::new(Box::new(func)));
-    Box::into_raw(func) as gpointer
+    Box::<T>::from_raw(ptr as *mut _);
 }
 
 /// Adds a closure to be called by the default main loop when it's idle.
@@ -71,8 +64,8 @@ fn into_raw<F: FnMut() -> Continue + Send + 'static>(func: F) -> gpointer {
 pub fn idle_add<F>(func: F) -> u32
 where F: FnMut() -> Continue + Send + 'static {
     unsafe {
-        glib_ffi::g_idle_add_full(glib_ffi::G_PRIORITY_DEFAULT_IDLE, Some(trampoline),
-            into_raw(func), Some(destroy_closure))
+        glib_ffi::g_idle_add_full(glib_ffi::G_PRIORITY_DEFAULT_IDLE, Some(trampoline::<F>),
+            Box::into_raw(Box::new(func)) as *mut _, Some(destroy::<F>))
     }
 }
 
@@ -89,8 +82,8 @@ where F: FnMut() -> Continue + Send + 'static {
 pub fn timeout_add<F>(interval: u32, func: F) -> u32
 where F: FnMut() -> Continue + Send + 'static {
     unsafe {
-        glib_ffi::g_timeout_add_full(glib_ffi::G_PRIORITY_DEFAULT, interval, Some(trampoline),
-            into_raw(func), Some(destroy_closure))
+        glib_ffi::g_timeout_add_full(glib_ffi::G_PRIORITY_DEFAULT, interval, Some(trampoline::<F>),
+            Box::into_raw(Box::new(func)) as *mut _, Some(destroy::<F>))
     }
 }
 
@@ -107,6 +100,6 @@ pub fn timeout_add_seconds<F>(interval: u32, func: F) -> u32
 where F: FnMut() -> Continue + Send + 'static {
     unsafe {
         glib_ffi::g_timeout_add_seconds_full(glib_ffi::G_PRIORITY_DEFAULT, interval,
-            Some(trampoline), into_raw(func), Some(destroy_closure))
+            Some(trampoline::<F>), Box::into_raw(Box::new(func)) as *mut _, Some(destroy::<F>))
     }
 }
